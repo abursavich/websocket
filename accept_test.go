@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"nhooyr.io/websocket/internal/headers/extensions"
 	"nhooyr.io/websocket/internal/test/assert"
 )
 
@@ -381,13 +382,39 @@ func Test_selectDeflate(t *testing.T) {
 			expOK: true,
 		},
 		{
+			name:   "permessage-deflate/first",
+			mode:   CompressionContextTakeover,
+			header: "permessage-deflate; server_no_context_takeover; client_no_context_takeover, permessage-deflate",
+			expCopts: &compressionOptions{
+				clientNoContextTakeover: true,
+				serverNoContextTakeover: true,
+			},
+			expOK: true,
+		},
+		{
+			name:   "permessage-deflate/duplicate-parameter",
+			mode:   CompressionContextTakeover,
+			header: "permessage-deflate; server_no_context_takeover; server_no_context_takeover",
+			expOK:  false,
+		},
+		{
+			name:   "permessage-deflate/duplicate-parameter/with-fallback",
+			mode:   CompressionContextTakeover,
+			header: "permessage-deflate; server_no_context_takeover; server_no_context_takeover, permessage-deflate; server_no_context_takeover",
+			expCopts: &compressionOptions{
+				clientNoContextTakeover: false,
+				serverNoContextTakeover: true,
+			},
+			expOK: true,
+		},
+		{
 			name:   "permessage-deflate/unknown-parameter",
 			mode:   CompressionNoContextTakeover,
 			header: "permessage-deflate; meow",
 			expOK:  false,
 		},
 		{
-			name:   "permessage-deflate/unknown-parameter",
+			name:   "permessage-deflate/unknown-parameter/with-fallback",
 			mode:   CompressionNoContextTakeover,
 			header: "permessage-deflate; meow, permessage-deflate; client_max_window_bits",
 			expCopts: &compressionOptions{
@@ -403,9 +430,8 @@ func Test_selectDeflate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			h := http.Header{}
-			h.Set("Sec-WebSocket-Extensions", tc.header)
-			copts, ok := selectDeflate(websocketExtensions(h), tc.mode)
+			exts, _ := extensions.Parse(tc.header)
+			copts, ok := selectDeflate(tc.mode, exts)
 			assert.Equal(t, "selected options", tc.expOK, ok)
 			assert.Equal(t, "compression options", tc.expCopts, copts)
 		})

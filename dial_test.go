@@ -117,12 +117,14 @@ func TestBadDials(t *testing.T) {
 	})
 }
 
-func Test_verifyServerHandshake(t *testing.T) {
+func Test_verifyServerResponse(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
 		name     string
+		dopts    *DialOptions
 		response func(w http.ResponseWriter)
+		copts    *compressionOptions
 		success  bool
 	}{
 		{
@@ -190,6 +192,27 @@ func Test_verifyServerHandshake(t *testing.T) {
 			success: false,
 		},
 		{
+			name: "duplicateDeflateParam",
+			response: func(w http.ResponseWriter) {
+				w.Header().Set("Connection", "Upgrade")
+				w.Header().Set("Upgrade", "websocket")
+				w.Header().Set("Sec-WebSocket-Extensions", "permessage-deflate; client_no_context_takeover; client_no_context_takeover")
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success: false,
+		},
+		{
+			name: "extraDeflateExtension",
+			response: func(w http.ResponseWriter) {
+				w.Header().Set("Connection", "Upgrade")
+				w.Header().Set("Upgrade", "websocket")
+				w.Header().Add("Sec-WebSocket-Extensions", "permessage-deflate; client_no_context_takeover")
+				w.Header().Add("Sec-WebSocket-Extensions", "permessage-deflate")
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success: false,
+		},
+		{
 			name: "success",
 			response: func(w http.ResponseWriter) {
 				w.Header().Set("Connection", "Upgrade")
@@ -198,6 +221,156 @@ func Test_verifyServerHandshake(t *testing.T) {
 			},
 			success: true,
 		},
+		{
+			name: "deflate",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				w.Header().Set("Connection", "Upgrade")
+				w.Header().Set("Upgrade", "websocket")
+				w.Header().Set("Sec-WebSocket-Extensions", "permessage-deflate")
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			copts: &compressionOptions{
+				clientNoContextTakeover: false,
+				serverNoContextTakeover: false,
+			},
+			success: true,
+		},
+		{
+			name: "deflateClientNoContextTakeover",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				w.Header().Set("Connection", "Upgrade")
+				w.Header().Set("Upgrade", "websocket")
+				w.Header().Set("Sec-WebSocket-Extensions", "permessage-deflate; client_no_context_takeover")
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			copts: &compressionOptions{
+				clientNoContextTakeover: true,
+				serverNoContextTakeover: false,
+			},
+			success: true,
+		},
+		{
+			name: "deflateClientNoContextTakeoverInvalid",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				w.Header().Set("Connection", "Upgrade")
+				w.Header().Set("Upgrade", "websocket")
+				w.Header().Set("Sec-WebSocket-Extensions", "permessage-deflate; client_no_context_takeover=invalid")
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success: false,
+		},
+		{
+			name: "deflateServerNoContextTakeover",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				w.Header().Set("Connection", "Upgrade")
+				w.Header().Set("Upgrade", "websocket")
+				w.Header().Set("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover")
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			copts: &compressionOptions{
+				clientNoContextTakeover: false,
+				serverNoContextTakeover: true,
+			},
+			success: true,
+		},
+		{
+			name: "deflateServerNoContextTakeoverInvalid",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				w.Header().Set("Connection", "Upgrade")
+				w.Header().Set("Upgrade", "websocket")
+				w.Header().Set("Sec-WebSocket-Extensions", "permessage-deflate; server_no_context_takeover=invalid")
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success: false,
+		},
+		{
+			name: "deflateServerMaxWindowBits7",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				w.Header().Set("Connection", "Upgrade")
+				w.Header().Set("Upgrade", "websocket")
+				w.Header().Set("Sec-WebSocket-Extensions", "permessage-deflate; server_max_window_bits=7")
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success: false,
+		},
+		{
+			name: "deflateServerMaxWindowBits8",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				w.Header().Set("Connection", "Upgrade")
+				w.Header().Set("Upgrade", "websocket")
+				w.Header().Set("Sec-WebSocket-Extensions", "permessage-deflate; server_max_window_bits=8")
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			copts: &compressionOptions{
+				clientNoContextTakeover: false,
+				serverNoContextTakeover: false,
+			},
+			success: true,
+		},
+		{
+			name: "deflateServerMaxWindowBits15",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				w.Header().Set("Connection", "Upgrade")
+				w.Header().Set("Upgrade", "websocket")
+				w.Header().Set("Sec-WebSocket-Extensions", "permessage-deflate; server_max_window_bits=15")
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			copts: &compressionOptions{
+				clientNoContextTakeover: false,
+				serverNoContextTakeover: false,
+			},
+			success: true,
+		},
+		{
+			name: "deflateServerMaxWindowBits16",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				w.Header().Set("Connection", "Upgrade")
+				w.Header().Set("Upgrade", "websocket")
+				w.Header().Set("Sec-WebSocket-Extensions", "permessage-deflate; server_max_window_bits=16")
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success: false,
+		},
+		{
+			name: "deflateServerMaxWindowBitsInvalid",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				w.Header().Set("Connection", "Upgrade")
+				w.Header().Set("Upgrade", "websocket")
+				w.Header().Set("Sec-WebSocket-Extensions", "permessage-deflate; server_max_window_bits=invalid")
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success: false,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -205,28 +378,29 @@ func Test_verifyServerHandshake(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			req := httptest.NewRequest("GET", "/", nil)
+			key, err := secWebSocketKey(rand.Reader)
+			assert.Success(t, err)
+			req.Header.Set("Sec-WebSocket-Key", key)
+
 			w := httptest.NewRecorder()
 			tc.response(w)
 			resp := w.Result()
-
-			r := httptest.NewRequest("GET", "/", nil)
-			key, err := secWebSocketKey(rand.Reader)
-			assert.Success(t, err)
-			r.Header.Set("Sec-WebSocket-Key", key)
-
 			if resp.Header.Get("Sec-WebSocket-Accept") == "" {
 				resp.Header.Set("Sec-WebSocket-Accept", secWebSocketAccept(key))
 			}
 
-			opts := &DialOptions{
-				Subprotocols: strings.Split(r.Header.Get("Sec-WebSocket-Protocol"), ","),
+			var opts DialOptions
+			if tc.dopts != nil {
+				opts = *tc.dopts
 			}
-			_, err = verifyServerResponse(opts, opts.CompressionMode.opts(), key, resp)
+			copts, err := verifyServerResponse(&opts, key, resp)
 			if tc.success {
 				assert.Success(t, err)
 			} else {
 				assert.Error(t, err)
 			}
+			assert.Equal(t, "compression options", tc.copts, copts)
 		})
 	}
 }

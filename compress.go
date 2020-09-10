@@ -5,6 +5,7 @@ package websocket
 import (
 	"compress/flate"
 	"io"
+	"strconv"
 	"sync"
 )
 
@@ -66,6 +67,11 @@ func (copts *compressionOptions) String() string {
 		s += "; server_no_context_takeover"
 	}
 	return s
+}
+
+func isValidWindowBits(s string) bool {
+	i, err := strconv.Atoi(s)
+	return err == nil && i >= 8 && i <= 15
 }
 
 // These bytes are required to get flate.Reader to return.
