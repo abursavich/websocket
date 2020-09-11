@@ -13,7 +13,6 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -84,12 +83,7 @@ func dial(ctx context.Context, urls string, opts *DialOptions, rand io.Reader) (
 		return nil, nil, fmt.Errorf("failed to generate Sec-WebSocket-Key: %w", err)
 	}
 
-	var copts *compressionOptions
-	if opts.CompressionMode != CompressionDisabled {
-		copts = opts.CompressionMode.opts()
-	}
-
-	resp, err := handshakeRequest(ctx, urls, opts, copts, challenge)
+	resp, err := handshakeRequest(ctx, urls, opts, challenge)
 	if err != nil {
 		return nil, resp, err
 	}
@@ -111,7 +105,7 @@ func dial(ctx context.Context, urls string, opts *DialOptions, rand io.Reader) (
 		}
 	}()
 
-	subproto, copts, err := verifyServerResponse(opts, copts, challenge, resp)
+	subproto, copts, err := verifyServerResponse(opts, challenge, resp)
 	if err != nil {
 		return nil, resp, err
 	}
@@ -132,7 +126,7 @@ func dial(ctx context.Context, urls string, opts *DialOptions, rand io.Reader) (
 	}), resp, nil
 }
 
-func handshakeRequest(ctx context.Context, urls string, opts *DialOptions, copts *compressionOptions, challenge []byte) (*http.Response, error) {
+func handshakeRequest(ctx context.Context, urls string, opts *DialOptions, challenge []byte) (*http.Response, error) {
 	if opts.HTTPClient.Timeout > 0 {
 		return nil, errors.New("use context for cancellation instead of http.Client.Timeout; see https://github.com/nhooyr/websocket/issues/67")
 	}
@@ -161,8 +155,8 @@ func handshakeRequest(ctx context.Context, urls string, opts *DialOptions, copts
 	if len(opts.Subprotocols) > 0 {
 		wsheaders.SetProtocols(req.Header, opts.Subprotocols...)
 	}
-	if copts != nil {
-		req.Header.Set("Sec-WebSocket-Extensions", copts.String())
+	if opts.CompressionMode != CompressionDisabled {
+		wsheaders.SetExtensions(req.Header, opts.CompressionMode.opts().extension())
 	}
 
 	resp, err := opts.HTTPClient.Do(req)
@@ -183,7 +177,7 @@ func generateChallenge(rr io.Reader) ([]byte, error) {
 	return b, nil
 }
 
-func verifyServerResponse(opts *DialOptions, copts *compressionOptions, challenge []byte, resp *http.Response) (string, *compressionOptions, error) {
+func verifyServerResponse(opts *DialOptions, challenge []byte, resp *http.Response) (subproto string, copts *compressionOptions, err error) {
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		return "", nil, fmt.Errorf("expected handshake response status code %v but got %v", http.StatusSwitchingProtocols, resp.StatusCode)
 	}
@@ -200,46 +194,58 @@ func verifyServerResponse(opts *DialOptions, copts *compressionOptions, challeng
 		return "", nil, fmt.Errorf("WebSocket protocol violation: %v", err)
 	}
 
-	subproto, err := wsheaders.VerifyProtocol(resp.Header, opts.Subprotocols)
+	subproto, err = wsheaders.VerifyProtocol(resp.Header, opts.Subprotocols)
 	if err != nil {
 		return "", nil, fmt.Errorf("WebSocket protcol violation: %v", err)
 	}
 
-	copts, err = verifyServerExtensions(copts, resp.Header)
+	exts, err := wsheaders.ParseExtensions(resp.Header)
 	if err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("WebSocket protcol violation: %v", err)
+	}
+	copts, err = verifyServerExtensions(opts.CompressionMode, exts)
+	if err != nil {
+		return "", nil, fmt.Errorf("WebSocket protcol violation: %v", err)
 	}
 	return subproto, copts, nil
 }
 
-func verifyServerExtensions(copts *compressionOptions, h http.Header) (*compressionOptions, error) {
-	exts := websocketExtensions(h)
+func verifyServerExtensions(mode CompressionMode, exts wsheaders.Extensions) (*compressionOptions, error) {
 	if len(exts) == 0 {
 		return nil, nil
 	}
 
 	ext := exts[0]
-	if ext.name != "permessage-deflate" || len(exts) > 1 || copts == nil {
-		return nil, fmt.Errorf("WebSocket protcol violation: unsupported extensions from server: %+v", exts[1:])
+	if len(exts) > 1 || mode == CompressionDisabled || ext.Name != "permessage-deflate" {
+		return nil, fmt.Errorf("unsupported extensions from server: %q", exts)
 	}
 
-	copts = &*copts
+	copts := mode.opts()
+	seen := make(map[string]bool)
+	for _, p := range ext.Params {
+		if seen[p.Name] {
+			return nil, fmt.Errorf("duplicate permessage-deflate extension parameter %q from server", p.Name)
+		}
+		seen[p.Name] = true
+		switch p.Name {
 
-	for _, p := range ext.params {
-		switch p {
 		case "client_no_context_takeover":
-			copts.clientNoContextTakeover = true
-			continue
+			if p.Value == "" {
+				copts.clientNoContextTakeover = true
+				continue
+			}
 		case "server_no_context_takeover":
-			copts.serverNoContextTakeover = true
-			continue
+			if p.Value == "" {
+				copts.serverNoContextTakeover = true
+				continue
+			}
+		case "server_max_window_bits":
+			if p.Value == "" || isValidWindowBits(p.Value) {
+				// We can't adjust the deflate window, but decoding with a larger window is acceptable.
+				continue
+			}
 		}
-		if strings.HasPrefix(p, "server_max_window_bits=") {
-			// We can't adjust the deflate window, but decoding with a larger window is acceptable.
-			continue
-		}
-
-		return nil, fmt.Errorf("unsupported permessage-deflate parameter: %q", p)
+		return nil, fmt.Errorf("unsupported permessage-deflate extension parameter from server: %v=%q", p.Name, p.Value)
 	}
 
 	return copts, nil

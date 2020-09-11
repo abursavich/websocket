@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/textproto"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -115,16 +114,15 @@ func accept(w http.ResponseWriter, r *http.Request, opts *AcceptOptions) (_ *Con
 		wsheaders.SetProtocols(w.Header(), subproto)
 	}
 
-	copts, ok := selectDeflate(websocketExtensions(r.Header), opts.CompressionMode)
+	exts, _ := wsheaders.ParseExtensions(r.Header)
+	copts, ok := selectDeflate(opts.CompressionMode, exts)
 	if ok {
-		w.Header().Set("Sec-WebSocket-Extensions", copts.String())
+		wsheaders.SetExtensions(w.Header(), copts.extension())
 	}
 
 	w.WriteHeader(http.StatusSwitchingProtocols)
 	// See https://github.com/nhooyr/websocket/issues/166
-	if ginWriter, ok := w.(interface {
-		WriteHeaderNow()
-	}); ok {
+	if ginWriter, ok := w.(interface{ WriteHeaderNow() }); ok {
 		ginWriter.WriteHeaderNow()
 	}
 
@@ -217,14 +215,14 @@ func match(pattern, s string) (bool, error) {
 	return filepath.Match(strings.ToLower(pattern), strings.ToLower(s))
 }
 
-func selectDeflate(extensions []websocketExtension, mode CompressionMode) (*compressionOptions, bool) {
+func selectDeflate(mode CompressionMode, exts wsheaders.Extensions) (*compressionOptions, bool) {
 	if mode == CompressionDisabled {
 		return nil, false
 	}
-	for _, ext := range extensions {
-		switch ext.name {
+	for _, ext := range exts {
+		switch ext.Name {
 		case "permessage-deflate":
-			if copts, ok := acceptDeflate(ext, mode); ok {
+			if copts, ok := acceptDeflate(mode, ext.Params); ok {
 				return copts, true
 			}
 		}
@@ -232,78 +230,37 @@ func selectDeflate(extensions []websocketExtension, mode CompressionMode) (*comp
 	return nil, false
 }
 
-func acceptDeflate(ext websocketExtension, mode CompressionMode) (*compressionOptions, bool) {
+func acceptDeflate(mode CompressionMode, params []wsheaders.ExtensionParam) (*compressionOptions, bool) {
 	copts := mode.opts()
-	for _, p := range ext.params {
-		switch p {
-		case "client_no_context_takeover":
-			copts.clientNoContextTakeover = true
-			continue
-		case "server_no_context_takeover":
-			copts.serverNoContextTakeover = true
-			continue
-		case "client_max_window_bits",
-			"server_max_window_bits=15":
-			continue
+	seen := make(map[string]bool)
+	for _, p := range params {
+		if seen[p.Name] {
+			return nil, false
 		}
-		if strings.HasPrefix(p, "client_max_window_bits=") {
-			// We can't adjust the deflate window, but decoding with a larger window is acceptable.
-			continue
+		seen[p.Name] = true
+
+		switch p.Name {
+		case "client_no_context_takeover":
+			if p.Value == "" {
+				copts.clientNoContextTakeover = true
+				continue
+			}
+		case "server_no_context_takeover":
+			if p.Value == "" {
+				copts.serverNoContextTakeover = true
+				continue
+			}
+		case "client_max_window_bits":
+			if p.Value == "" || isValidWindowBits(p.Value) {
+				// We can't adjust the deflate window, but decoding with a larger window is acceptable.
+				continue
+			}
+		case "server_max_window_bits":
+			if p.Value == "15" {
+				continue
+			}
 		}
 		return nil, false
 	}
 	return copts, true
-}
-
-func headerContainsToken(h http.Header, key, token string) bool {
-	token = strings.ToLower(token)
-
-	for _, t := range headerTokens(h, key) {
-		if t == token {
-			return true
-		}
-	}
-	return false
-}
-
-type websocketExtension struct {
-	name   string
-	params []string
-}
-
-func websocketExtensions(h http.Header) []websocketExtension {
-	var exts []websocketExtension
-	extStrs := headerTokens(h, "Sec-WebSocket-Extensions")
-	for _, extStr := range extStrs {
-		if extStr == "" {
-			continue
-		}
-
-		vals := strings.Split(extStr, ";")
-		for i := range vals {
-			vals[i] = strings.TrimSpace(vals[i])
-		}
-
-		e := websocketExtension{
-			name:   vals[0],
-			params: vals[1:],
-		}
-
-		exts = append(exts, e)
-	}
-	return exts
-}
-
-func headerTokens(h http.Header, key string) []string {
-	key = textproto.CanonicalMIMEHeaderKey(key)
-	var tokens []string
-	for _, v := range h[key] {
-		v = strings.TrimSpace(v)
-		for _, t := range strings.Split(v, ",") {
-			t = strings.ToLower(t)
-			t = strings.TrimSpace(t)
-			tokens = append(tokens, t)
-		}
-	}
-	return tokens
 }

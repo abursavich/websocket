@@ -5,7 +5,10 @@ package websocket
 import (
 	"compress/flate"
 	"io"
+	"strconv"
 	"sync"
+
+	"nhooyr.io/websocket/internal/wsheaders"
 )
 
 // CompressionMode represents the modes available to the deflate extension.
@@ -58,14 +61,25 @@ type compressionOptions struct {
 }
 
 func (copts *compressionOptions) String() string {
-	s := "permessage-deflate"
+	return copts.extension().String()
+}
+
+func (copts *compressionOptions) extension() wsheaders.Extension {
+	ext := wsheaders.Extension{
+		Name: "permessage-deflate",
+	}
 	if copts.clientNoContextTakeover {
-		s += "; client_no_context_takeover"
+		ext.Params = append(ext.Params, wsheaders.ExtensionParam{Name: "client_no_context_takeover"})
 	}
 	if copts.serverNoContextTakeover {
-		s += "; server_no_context_takeover"
+		ext.Params = append(ext.Params, wsheaders.ExtensionParam{Name: "server_no_context_takeover"})
 	}
-	return s
+	return ext
+}
+
+func isValidWindowBits(s string) bool {
+	i, err := strconv.Atoi(s)
+	return err == nil && i >= 8 && i <= 15
 }
 
 // These bytes are required to get flate.Reader to return.

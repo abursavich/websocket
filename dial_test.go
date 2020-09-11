@@ -123,14 +123,15 @@ func TestBadDials(t *testing.T) {
 	})
 }
 
-func Test_verifyServerHandshake(t *testing.T) {
+func Test_verifyServerResponse(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
 		name     string
-		response func(w http.ResponseWriter)
 		dopts    *DialOptions
+		response func(w http.ResponseWriter)
 		subproto string
+		copts    *compressionOptions
 		success  bool
 	}{
 		{
@@ -182,7 +183,9 @@ func Test_verifyServerHandshake(t *testing.T) {
 			response: func(w http.ResponseWriter) {
 				wsheaders.SetConnection(w.Header())
 				wsheaders.SetUpgrade(w.Header())
-				w.Header().Set("Sec-WebSocket-Extensions", "meow")
+				wsheaders.SetExtensions(w.Header(), wsheaders.Extension{
+					Name: "meow",
+				})
 				w.WriteHeader(http.StatusSwitchingProtocols)
 			},
 			success: false,
@@ -192,7 +195,42 @@ func Test_verifyServerHandshake(t *testing.T) {
 			response: func(w http.ResponseWriter) {
 				wsheaders.SetConnection(w.Header())
 				wsheaders.SetUpgrade(w.Header())
-				w.Header().Set("Sec-WebSocket-Extensions", "permessage-deflate; meow")
+				wsheaders.SetExtensions(w.Header(), wsheaders.Extension{
+					Name:   "permessage-deflate",
+					Params: []wsheaders.ExtensionParam{{Name: "meow"}},
+				})
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success: false,
+		},
+		{
+			name: "duplicateDeflateParam",
+			response: func(w http.ResponseWriter) {
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
+				wsheaders.SetExtensions(w.Header(), wsheaders.Extension{
+					Name: "permessage-deflate",
+					Params: []wsheaders.ExtensionParam{
+						{Name: "client_no_context_takeover"},
+						{Name: "client_no_context_takeover"},
+					},
+				})
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success: false,
+		},
+		{
+			name: "extraDeflateExtension",
+			response: func(w http.ResponseWriter) {
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
+				wsheaders.SetExtensions(w.Header(),
+					wsheaders.Extension{
+						Name:   "permessage-deflate",
+						Params: []wsheaders.ExtensionParam{{Name: "client_no_context_takeover"}},
+					},
+					wsheaders.Extension{Name: "permessage-deflate"},
+				)
 				w.WriteHeader(http.StatusSwitchingProtocols)
 			},
 			success: false,
@@ -220,6 +258,203 @@ func Test_verifyServerHandshake(t *testing.T) {
 			success:  true,
 			subproto: "FOO",
 		},
+		{
+			name: "deflate",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
+				wsheaders.SetExtensions(w.Header(), wsheaders.Extension{
+					Name: "permessage-deflate",
+				})
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			copts: &compressionOptions{
+				clientNoContextTakeover: false,
+				serverNoContextTakeover: false,
+			},
+			success: true,
+		},
+		{
+			name: "deflateClientNoContextTakeover",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
+				wsheaders.SetExtensions(w.Header(), wsheaders.Extension{
+					Name: "permessage-deflate",
+					Params: []wsheaders.ExtensionParam{{
+						Name: "client_no_context_takeover",
+					}},
+				})
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			copts: &compressionOptions{
+				clientNoContextTakeover: true,
+				serverNoContextTakeover: false,
+			},
+			success: true,
+		},
+		{
+			name: "deflateClientNoContextTakeoverInvalid",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
+				wsheaders.SetExtensions(w.Header(), wsheaders.Extension{
+					Name: "permessage-deflate",
+					Params: []wsheaders.ExtensionParam{{
+						Name: "client_no_context_takeover", Value: "invalid",
+					}},
+				})
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success: false,
+		},
+		{
+			name: "deflateServerNoContextTakeover",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
+				wsheaders.SetExtensions(w.Header(), wsheaders.Extension{
+					Name: "permessage-deflate",
+					Params: []wsheaders.ExtensionParam{{
+						Name: "server_no_context_takeover",
+					}},
+				})
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			copts: &compressionOptions{
+				clientNoContextTakeover: false,
+				serverNoContextTakeover: true,
+			},
+			success: true,
+		},
+		{
+			name: "deflateServerNoContextTakeoverInvalid",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
+				wsheaders.SetExtensions(w.Header(), wsheaders.Extension{
+					Name: "permessage-deflate",
+					Params: []wsheaders.ExtensionParam{{
+						Name: "server_no_context_takeover", Value: "invalid",
+					}},
+				})
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success: false,
+		},
+		{
+			name: "deflateServerMaxWindowBits7",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
+				wsheaders.SetExtensions(w.Header(), wsheaders.Extension{
+					Name: "permessage-deflate",
+					Params: []wsheaders.ExtensionParam{{
+						Name: "server_max_window_bits", Value: "7",
+					}},
+				})
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success: false,
+		},
+		{
+			name: "deflateServerMaxWindowBits8",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
+				wsheaders.SetExtensions(w.Header(), wsheaders.Extension{
+					Name: "permessage-deflate",
+					Params: []wsheaders.ExtensionParam{{
+						Name: "server_max_window_bits", Value: "8",
+					}},
+				})
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			copts: &compressionOptions{
+				clientNoContextTakeover: false,
+				serverNoContextTakeover: false,
+			},
+			success: true,
+		},
+		{
+			name: "deflateServerMaxWindowBits15",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
+				wsheaders.SetExtensions(w.Header(), wsheaders.Extension{
+					Name: "permessage-deflate",
+					Params: []wsheaders.ExtensionParam{{
+						Name: "server_max_window_bits", Value: "15",
+					}},
+				})
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			copts: &compressionOptions{
+				clientNoContextTakeover: false,
+				serverNoContextTakeover: false,
+			},
+			success: true,
+		},
+		{
+			name: "deflateServerMaxWindowBits16",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
+				wsheaders.SetExtensions(w.Header(), wsheaders.Extension{
+					Name: "permessage-deflate",
+					Params: []wsheaders.ExtensionParam{{
+						Name: "server_max_window_bits", Value: "16",
+					}},
+				})
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success: false,
+		},
+		{
+			name: "deflateServerMaxWindowBitsInvalid",
+			dopts: &DialOptions{
+				CompressionMode: CompressionContextTakeover,
+			},
+			response: func(w http.ResponseWriter) {
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
+				wsheaders.SetExtensions(w.Header(), wsheaders.Extension{
+					Name: "permessage-deflate",
+					Params: []wsheaders.ExtensionParam{{
+						Name: "server_max_window_bits", Value: "invalid",
+					}},
+				})
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success: false,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -243,13 +478,14 @@ func Test_verifyServerHandshake(t *testing.T) {
 			if tc.dopts != nil {
 				opts = *tc.dopts
 			}
-			subproto, _, err := verifyServerResponse(&opts, opts.CompressionMode.opts(), challenge, resp)
+			subproto, copts, err := verifyServerResponse(&opts, challenge, resp)
 			if tc.success {
 				assert.Success(t, err)
 			} else {
 				assert.Error(t, err)
 			}
 			assert.Equal(t, "subprotocol", tc.subproto, subproto)
+			assert.Equal(t, "compression options", tc.copts, copts)
 		})
 	}
 }
