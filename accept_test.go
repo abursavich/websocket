@@ -4,6 +4,7 @@ package websocket
 
 import (
 	"bufio"
+	"encoding/base64"
 	"errors"
 	"net"
 	"net/http"
@@ -12,7 +13,12 @@ import (
 	"testing"
 
 	"nhooyr.io/websocket/internal/test/assert"
+	"nhooyr.io/websocket/internal/wsheaders"
 )
+
+const validChallenge = "dGhlIHNhbXBsZSBub25jZQ=="
+
+var validChallengeBuf, _ = base64.StdEncoding.DecodeString(validChallenge)
 
 func TestAccept(t *testing.T) {
 	t.Parallel()
@@ -32,10 +38,10 @@ func TestAccept(t *testing.T) {
 
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest("GET", "/", nil)
-		r.Header.Set("Connection", "Upgrade")
-		r.Header.Set("Upgrade", "websocket")
-		r.Header.Set("Sec-WebSocket-Version", "13")
-		r.Header.Set("Sec-WebSocket-Key", "meow123")
+		wsheaders.SetConnection(r.Header)
+		wsheaders.SetUpgrade(r.Header)
+		wsheaders.SetVersion(r.Header, 13)
+		wsheaders.SetChallenge(r.Header, validChallengeBuf)
 		r.Header.Set("Origin", "harhar.com")
 
 		_, err := Accept(w, r, nil)
@@ -47,10 +53,10 @@ func TestAccept(t *testing.T) {
 
 		newRequest := func(extensions string) *http.Request {
 			r := httptest.NewRequest("GET", "/", nil)
-			r.Header.Set("Connection", "Upgrade")
-			r.Header.Set("Upgrade", "websocket")
-			r.Header.Set("Sec-WebSocket-Version", "13")
-			r.Header.Set("Sec-WebSocket-Key", "meow123")
+			wsheaders.SetConnection(r.Header)
+			wsheaders.SetUpgrade(r.Header)
+			wsheaders.SetVersion(r.Header, 13)
+			wsheaders.SetChallenge(r.Header, validChallengeBuf)
 			r.Header.Set("Sec-WebSocket-Extensions", extensions)
 			return r
 		}
@@ -93,10 +99,10 @@ func TestAccept(t *testing.T) {
 
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest("GET", "/", nil)
-		r.Header.Set("Connection", "Upgrade")
-		r.Header.Set("Upgrade", "websocket")
-		r.Header.Set("Sec-WebSocket-Version", "13")
-		r.Header.Set("Sec-WebSocket-Key", "meow123")
+		wsheaders.SetConnection(r.Header)
+		wsheaders.SetUpgrade(r.Header)
+		wsheaders.SetVersion(r.Header, 13)
+		wsheaders.SetChallenge(r.Header, validChallengeBuf)
 
 		_, err := Accept(w, r, nil)
 		assert.Contains(t, err, `http.ResponseWriter does not implement http.Hijacker`)
@@ -113,10 +119,10 @@ func TestAccept(t *testing.T) {
 		}
 
 		r := httptest.NewRequest("GET", "/", nil)
-		r.Header.Set("Connection", "Upgrade")
-		r.Header.Set("Upgrade", "websocket")
-		r.Header.Set("Sec-WebSocket-Version", "13")
-		r.Header.Set("Sec-WebSocket-Key", "meow123")
+		wsheaders.SetConnection(r.Header)
+		wsheaders.SetUpgrade(r.Header)
+		wsheaders.SetVersion(r.Header, 13)
+		wsheaders.SetChallenge(r.Header, validChallengeBuf)
 
 		_, err := Accept(w, r, nil)
 		assert.Contains(t, err, `failed to hijack connection`)
@@ -157,37 +163,37 @@ func Test_verifyClientHandshake(t *testing.T) {
 		{
 			name: "badWebSocketVersion",
 			h: map[string]string{
-				"Connection":            "Upgrade",
-				"Upgrade":               "websocket",
-				"Sec-WebSocket-Version": "14",
+				"Connection":         "Upgrade",
+				"Upgrade":            "websocket",
+				wsheaders.VersionKey: "14",
 			},
 		},
 		{
 			name: "badWebSocketKey",
 			h: map[string]string{
-				"Connection":            "Upgrade",
-				"Upgrade":               "websocket",
-				"Sec-WebSocket-Version": "13",
-				"Sec-WebSocket-Key":     "",
+				"Connection":           "Upgrade",
+				"Upgrade":              "websocket",
+				wsheaders.VersionKey:   "13",
+				wsheaders.ChallengeKey: "",
 			},
 		},
 		{
 			name: "badHTTPVersion",
 			h: map[string]string{
-				"Connection":            "Upgrade",
-				"Upgrade":               "websocket",
-				"Sec-WebSocket-Version": "13",
-				"Sec-WebSocket-Key":     "meow123",
+				"Connection":           "Upgrade",
+				"Upgrade":              "websocket",
+				wsheaders.VersionKey:   "13",
+				wsheaders.ChallengeKey: validChallenge,
 			},
 			http1: true,
 		},
 		{
 			name: "success",
 			h: map[string]string{
-				"Connection":            "keep-alive, Upgrade",
-				"Upgrade":               "websocket",
-				"Sec-WebSocket-Version": "13",
-				"Sec-WebSocket-Key":     "meow123",
+				"Connection":           "keep-alive, Upgrade",
+				"Upgrade":              "websocket",
+				wsheaders.VersionKey:   "13",
+				wsheaders.ChallengeKey: validChallenge,
 			},
 			success: true,
 		},
@@ -210,7 +216,7 @@ func Test_verifyClientHandshake(t *testing.T) {
 				r.Header.Set(k, v)
 			}
 
-			_, err := verifyClientRequest(httptest.NewRecorder(), r)
+			_, _, err := verifyClientRequest(httptest.NewRecorder(), r)
 			if tc.success {
 				assert.Success(t, err)
 			} else {

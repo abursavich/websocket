@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +18,7 @@ import (
 	"time"
 
 	"nhooyr.io/websocket/internal/errd"
+	"nhooyr.io/websocket/internal/wsheaders"
 )
 
 // DialOptions represents Dial's options.
@@ -79,7 +79,7 @@ func dial(ctx context.Context, urls string, opts *DialOptions, rand io.Reader) (
 		opts.HTTPHeader = http.Header{}
 	}
 
-	secWebSocketKey, err := secWebSocketKey(rand)
+	challenge, err := generateChallenge(rand)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate Sec-WebSocket-Key: %w", err)
 	}
@@ -89,7 +89,7 @@ func dial(ctx context.Context, urls string, opts *DialOptions, rand io.Reader) (
 		copts = opts.CompressionMode.opts()
 	}
 
-	resp, err := handshakeRequest(ctx, urls, opts, copts, secWebSocketKey)
+	resp, err := handshakeRequest(ctx, urls, opts, copts, challenge)
 	if err != nil {
 		return nil, resp, err
 	}
@@ -111,7 +111,7 @@ func dial(ctx context.Context, urls string, opts *DialOptions, rand io.Reader) (
 		}
 	}()
 
-	copts, err = verifyServerResponse(opts, copts, secWebSocketKey, resp)
+	copts, err = verifyServerResponse(opts, copts, challenge, resp)
 	if err != nil {
 		return nil, resp, err
 	}
@@ -132,7 +132,7 @@ func dial(ctx context.Context, urls string, opts *DialOptions, rand io.Reader) (
 	}), resp, nil
 }
 
-func handshakeRequest(ctx context.Context, urls string, opts *DialOptions, copts *compressionOptions, secWebSocketKey string) (*http.Response, error) {
+func handshakeRequest(ctx context.Context, urls string, opts *DialOptions, copts *compressionOptions, challenge []byte) (*http.Response, error) {
 	if opts.HTTPClient.Timeout > 0 {
 		return nil, errors.New("use context for cancellation instead of http.Client.Timeout; see https://github.com/nhooyr/websocket/issues/67")
 	}
@@ -154,10 +154,10 @@ func handshakeRequest(ctx context.Context, urls string, opts *DialOptions, copts
 
 	req, _ := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	req.Header = opts.HTTPHeader.Clone()
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Sec-WebSocket-Version", "13")
-	req.Header.Set("Sec-WebSocket-Key", secWebSocketKey)
+	wsheaders.SetConnection(req.Header)
+	wsheaders.SetUpgrade(req.Header)
+	wsheaders.SetVersion(req.Header, 13)
+	wsheaders.SetChallenge(req.Header, challenge)
 	if len(opts.Subprotocols) > 0 {
 		req.Header.Set("Sec-WebSocket-Protocol", strings.Join(opts.Subprotocols, ","))
 	}
@@ -172,36 +172,32 @@ func handshakeRequest(ctx context.Context, urls string, opts *DialOptions, copts
 	return resp, nil
 }
 
-func secWebSocketKey(rr io.Reader) (string, error) {
+func generateChallenge(rr io.Reader) ([]byte, error) {
 	if rr == nil {
 		rr = rand.Reader
 	}
 	b := make([]byte, 16)
-	_, err := io.ReadFull(rr, b)
-	if err != nil {
-		return "", fmt.Errorf("failed to read random data from rand.Reader: %w", err)
+	if _, err := io.ReadFull(rr, b); err != nil {
+		return nil, fmt.Errorf("failed to read random data: %w", err)
 	}
-	return base64.StdEncoding.EncodeToString(b), nil
+	return b, nil
 }
 
-func verifyServerResponse(opts *DialOptions, copts *compressionOptions, secWebSocketKey string, resp *http.Response) (*compressionOptions, error) {
+func verifyServerResponse(opts *DialOptions, copts *compressionOptions, challenge []byte, resp *http.Response) (*compressionOptions, error) {
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		return nil, fmt.Errorf("expected handshake response status code %v but got %v", http.StatusSwitchingProtocols, resp.StatusCode)
 	}
 
-	if !headerContainsToken(resp.Header, "Connection", "Upgrade") {
-		return nil, fmt.Errorf("WebSocket protocol violation: Connection header %q does not contain Upgrade", resp.Header.Get("Connection"))
+	if err := wsheaders.VerifyConnection(resp.Header); err != nil {
+		return nil, fmt.Errorf("WebSocket protocol violation: %v", err)
 	}
 
-	if !headerContainsToken(resp.Header, "Upgrade", "WebSocket") {
-		return nil, fmt.Errorf("WebSocket protocol violation: Upgrade header %q does not contain websocket", resp.Header.Get("Upgrade"))
+	if err := wsheaders.VerifyServerUpgrade(resp.Header); err != nil {
+		return nil, fmt.Errorf("WebSocket protocol violation: %v", err)
 	}
 
-	if resp.Header.Get("Sec-WebSocket-Accept") != secWebSocketAccept(secWebSocketKey) {
-		return nil, fmt.Errorf("WebSocket protocol violation: invalid Sec-WebSocket-Accept %q, key %q",
-			resp.Header.Get("Sec-WebSocket-Accept"),
-			secWebSocketKey,
-		)
+	if err := wsheaders.VerifyAccept(resp.Header, challenge); err != nil {
+		return nil, fmt.Errorf("WebSocket protocol violation: %v", err)
 	}
 
 	err := verifySubprotocol(opts.Subprotocols, resp)

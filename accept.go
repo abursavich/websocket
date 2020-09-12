@@ -4,8 +4,6 @@ package websocket
 
 import (
 	"bytes"
-	"crypto/sha1"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +15,7 @@ import (
 	"strings"
 
 	"nhooyr.io/websocket/internal/errd"
+	"nhooyr.io/websocket/internal/wsheaders"
 )
 
 // AcceptOptions represents Accept's options.
@@ -82,7 +81,7 @@ func accept(w http.ResponseWriter, r *http.Request, opts *AcceptOptions) (_ *Con
 	}
 	opts = &*opts
 
-	errCode, err := verifyClientRequest(w, r)
+	challenge, errCode, err := verifyClientRequest(w, r)
 	if err != nil {
 		http.Error(w, err.Error(), errCode)
 		return nil, err
@@ -107,11 +106,9 @@ func accept(w http.ResponseWriter, r *http.Request, opts *AcceptOptions) (_ *Con
 		return nil, err
 	}
 
-	w.Header().Set("Upgrade", "websocket")
-	w.Header().Set("Connection", "Upgrade")
-
-	key := r.Header.Get("Sec-WebSocket-Key")
-	w.Header().Set("Sec-WebSocket-Accept", secWebSocketAccept(key))
+	wsheaders.SetUpgrade(w.Header())
+	wsheaders.SetConnection(w.Header())
+	wsheaders.SetAccept(w.Header(), challenge)
 
 	subproto := selectSubprotocol(r, opts.Subprotocols)
 	if subproto != "" {
@@ -154,37 +151,39 @@ func accept(w http.ResponseWriter, r *http.Request, opts *AcceptOptions) (_ *Con
 	}), nil
 }
 
-func verifyClientRequest(w http.ResponseWriter, r *http.Request) (errCode int, _ error) {
+func verifyClientRequest(w http.ResponseWriter, r *http.Request) (challenge []byte, errCode int, err error) {
 	if !r.ProtoAtLeast(1, 1) {
-		return http.StatusUpgradeRequired, fmt.Errorf("WebSocket protocol violation: handshake request must be at least HTTP/1.1: %q", r.Proto)
+		return nil, http.StatusUpgradeRequired, fmt.Errorf("WebSocket protocol violation: handshake request must be at least HTTP/1.1: %q", r.Proto)
 	}
 
-	if !headerContainsToken(r.Header, "Connection", "Upgrade") {
-		w.Header().Set("Connection", "Upgrade")
-		w.Header().Set("Upgrade", "websocket")
-		return http.StatusUpgradeRequired, fmt.Errorf("WebSocket protocol violation: Connection header %q does not contain Upgrade", r.Header.Get("Connection"))
+	if err := wsheaders.VerifyConnection(r.Header); err != nil {
+		wsheaders.SetConnection(w.Header())
+		wsheaders.SetUpgrade(w.Header())
+		return nil, http.StatusUpgradeRequired, fmt.Errorf("WebSocket protocol violation: %v", err)
 	}
 
-	if !headerContainsToken(r.Header, "Upgrade", "websocket") {
-		w.Header().Set("Connection", "Upgrade")
-		w.Header().Set("Upgrade", "websocket")
-		return http.StatusUpgradeRequired, fmt.Errorf("WebSocket protocol violation: Upgrade header %q does not contain websocket", r.Header.Get("Upgrade"))
+	if err := wsheaders.VerifyClientUpgrade(r.Header); err != nil {
+		wsheaders.SetConnection(w.Header())
+		wsheaders.SetUpgrade(w.Header())
+		return nil, http.StatusUpgradeRequired, fmt.Errorf("WebSocket protocol violation: %v", err)
 	}
 
 	if r.Method != "GET" {
-		return http.StatusMethodNotAllowed, fmt.Errorf("WebSocket protocol violation: handshake request method is not GET but %q", r.Method)
+		return nil, http.StatusMethodNotAllowed, fmt.Errorf("WebSocket protocol violation: handshake request method is not GET but %q", r.Method)
 	}
 
-	if r.Header.Get("Sec-WebSocket-Version") != "13" {
-		w.Header().Set("Sec-WebSocket-Version", "13")
-		return http.StatusBadRequest, fmt.Errorf("unsupported WebSocket protocol version (only 13 is supported): %q", r.Header.Get("Sec-WebSocket-Version"))
+	if v, err := wsheaders.GetVersion(r.Header); v != 13 {
+		wsheaders.SetVersion(w.Header(), 13)
+		if err != nil {
+			return nil, http.StatusUpgradeRequired, fmt.Errorf("WebSocket protocol violation: %v", err)
+		}
+		return nil, http.StatusBadRequest, fmt.Errorf("unsupported WebSocket protocol version (only 13 is supported): %d", v)
 	}
 
-	if r.Header.Get("Sec-WebSocket-Key") == "" {
-		return http.StatusBadRequest, errors.New("WebSocket protocol violation: missing Sec-WebSocket-Key")
+	if challenge, err = wsheaders.GetChallenge(r.Header); err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("WebSocket protocol violation: %v", err)
 	}
-
-	return 0, nil
+	return challenge, 0, nil
 }
 
 func authenticateOrigin(r *http.Request, originHosts []string) error {
@@ -319,14 +318,4 @@ func headerTokens(h http.Header, key string) []string {
 		}
 	}
 	return tokens
-}
-
-var keyGUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
-
-func secWebSocketAccept(secWebSocketKey string) string {
-	h := sha1.New()
-	h.Write([]byte(secWebSocketKey))
-	h.Write(keyGUID)
-
-	return base64.StdEncoding.EncodeToString(h.Sum(nil))
 }

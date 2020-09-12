@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"nhooyr.io/websocket/internal/test/assert"
+	"nhooyr.io/websocket/internal/wsheaders"
 )
 
 func TestBadDials(t *testing.T) {
@@ -98,10 +99,15 @@ func TestBadDials(t *testing.T) {
 		defer cancel()
 
 		rt := func(r *http.Request) (*http.Response, error) {
+			challenge, err := wsheaders.GetChallenge(r.Header)
+			if err != nil {
+				return nil, err
+			}
+
 			h := http.Header{}
-			h.Set("Connection", "Upgrade")
-			h.Set("Upgrade", "websocket")
-			h.Set("Sec-WebSocket-Accept", secWebSocketAccept(r.Header.Get("Sec-WebSocket-Key")))
+			wsheaders.SetConnection(h)
+			wsheaders.SetUpgrade(h)
+			wsheaders.SetAccept(h, challenge)
 
 			return &http.Response{
 				StatusCode: http.StatusSwitchingProtocols,
@@ -143,7 +149,7 @@ func Test_verifyServerHandshake(t *testing.T) {
 		{
 			name: "badUpgrade",
 			response: func(w http.ResponseWriter) {
-				w.Header().Set("Connection", "Upgrade")
+				wsheaders.SetConnection(w.Header())
 				w.Header().Set("Upgrade", "???")
 				w.WriteHeader(http.StatusSwitchingProtocols)
 			},
@@ -152,9 +158,9 @@ func Test_verifyServerHandshake(t *testing.T) {
 		{
 			name: "badSecWebSocketAccept",
 			response: func(w http.ResponseWriter) {
-				w.Header().Set("Connection", "Upgrade")
-				w.Header().Set("Upgrade", "websocket")
-				w.Header().Set("Sec-WebSocket-Accept", "xd")
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
+				w.Header().Set(wsheaders.AcceptKey, "xd")
 				w.WriteHeader(http.StatusSwitchingProtocols)
 			},
 			success: false,
@@ -162,8 +168,8 @@ func Test_verifyServerHandshake(t *testing.T) {
 		{
 			name: "badSecWebSocketProtocol",
 			response: func(w http.ResponseWriter) {
-				w.Header().Set("Connection", "Upgrade")
-				w.Header().Set("Upgrade", "websocket")
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
 				w.Header().Set("Sec-WebSocket-Protocol", "xd")
 				w.WriteHeader(http.StatusSwitchingProtocols)
 			},
@@ -172,8 +178,8 @@ func Test_verifyServerHandshake(t *testing.T) {
 		{
 			name: "unsupportedExtension",
 			response: func(w http.ResponseWriter) {
-				w.Header().Set("Connection", "Upgrade")
-				w.Header().Set("Upgrade", "websocket")
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
 				w.Header().Set("Sec-WebSocket-Extensions", "meow")
 				w.WriteHeader(http.StatusSwitchingProtocols)
 			},
@@ -182,8 +188,8 @@ func Test_verifyServerHandshake(t *testing.T) {
 		{
 			name: "unsupportedDeflateParam",
 			response: func(w http.ResponseWriter) {
-				w.Header().Set("Connection", "Upgrade")
-				w.Header().Set("Upgrade", "websocket")
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
 				w.Header().Set("Sec-WebSocket-Extensions", "permessage-deflate; meow")
 				w.WriteHeader(http.StatusSwitchingProtocols)
 			},
@@ -192,8 +198,8 @@ func Test_verifyServerHandshake(t *testing.T) {
 		{
 			name: "success",
 			response: func(w http.ResponseWriter) {
-				w.Header().Set("Connection", "Upgrade")
-				w.Header().Set("Upgrade", "websocket")
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
 				w.WriteHeader(http.StatusSwitchingProtocols)
 			},
 			success: true,
@@ -205,23 +211,22 @@ func Test_verifyServerHandshake(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			req := httptest.NewRequest("GET", "/", nil)
+			challenge, err := generateChallenge(rand.Reader)
+			assert.Success(t, err)
+			wsheaders.SetChallenge(req.Header, challenge)
+
 			w := httptest.NewRecorder()
 			tc.response(w)
 			resp := w.Result()
-
-			r := httptest.NewRequest("GET", "/", nil)
-			key, err := secWebSocketKey(rand.Reader)
-			assert.Success(t, err)
-			r.Header.Set("Sec-WebSocket-Key", key)
-
-			if resp.Header.Get("Sec-WebSocket-Accept") == "" {
-				resp.Header.Set("Sec-WebSocket-Accept", secWebSocketAccept(key))
+			if resp.Header.Get(wsheaders.AcceptKey) == "" {
+				wsheaders.SetAccept(resp.Header, challenge)
 			}
 
 			opts := &DialOptions{
-				Subprotocols: strings.Split(r.Header.Get("Sec-WebSocket-Protocol"), ","),
+				Subprotocols: strings.Split(req.Header.Get("Sec-WebSocket-Protocol"), ","),
 			}
-			_, err = verifyServerResponse(opts, opts.CompressionMode.opts(), key, resp)
+			_, err = verifyServerResponse(opts, opts.CompressionMode.opts(), challenge, resp)
 			if tc.success {
 				assert.Success(t, err)
 			} else {
