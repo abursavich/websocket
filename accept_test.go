@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"nhooyr.io/websocket/internal/test/assert"
@@ -222,55 +221,6 @@ func Test_verifyClientHandshake(t *testing.T) {
 			} else {
 				assert.Error(t, err)
 			}
-		})
-	}
-}
-
-func Test_selectSubprotocol(t *testing.T) {
-	t.Parallel()
-
-	testCases := []struct {
-		name            string
-		clientProtocols []string
-		serverProtocols []string
-		negotiated      string
-	}{
-		{
-			name:            "empty",
-			clientProtocols: nil,
-			serverProtocols: nil,
-			negotiated:      "",
-		},
-		{
-			name:            "basic",
-			clientProtocols: []string{"echo", "echo2"},
-			serverProtocols: []string{"echo2", "echo"},
-			negotiated:      "echo2",
-		},
-		{
-			name:            "none",
-			clientProtocols: []string{"echo", "echo3"},
-			serverProtocols: []string{"echo2", "echo4"},
-			negotiated:      "",
-		},
-		{
-			name:            "fallback",
-			clientProtocols: []string{"echo", "echo3"},
-			serverProtocols: []string{"echo2", "echo3"},
-			negotiated:      "echo3",
-		},
-	}
-
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			r := httptest.NewRequest("GET", "/", nil)
-			r.Header.Set("Sec-WebSocket-Protocol", strings.Join(tc.clientProtocols, ","))
-
-			negotiated := selectSubprotocol(r, tc.serverProtocols)
-			assert.Equal(t, "negotiated", tc.negotiated, negotiated)
 		})
 	}
 }

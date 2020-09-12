@@ -111,7 +111,7 @@ func dial(ctx context.Context, urls string, opts *DialOptions, rand io.Reader) (
 		}
 	}()
 
-	copts, err = verifyServerResponse(opts, copts, challenge, resp)
+	subproto, copts, err := verifyServerResponse(opts, copts, challenge, resp)
 	if err != nil {
 		return nil, resp, err
 	}
@@ -122,7 +122,7 @@ func dial(ctx context.Context, urls string, opts *DialOptions, rand io.Reader) (
 	}
 
 	return newConn(connConfig{
-		subprotocol:    resp.Header.Get("Sec-WebSocket-Protocol"),
+		subprotocol:    subproto,
 		rwc:            rwc,
 		client:         true,
 		copts:          copts,
@@ -159,7 +159,7 @@ func handshakeRequest(ctx context.Context, urls string, opts *DialOptions, copts
 	wsheaders.SetVersion(req.Header, 13)
 	wsheaders.SetChallenge(req.Header, challenge)
 	if len(opts.Subprotocols) > 0 {
-		req.Header.Set("Sec-WebSocket-Protocol", strings.Join(opts.Subprotocols, ","))
+		wsheaders.SetProtocols(req.Header, opts.Subprotocols...)
 	}
 	if copts != nil {
 		req.Header.Set("Sec-WebSocket-Extensions", copts.String())
@@ -183,44 +183,33 @@ func generateChallenge(rr io.Reader) ([]byte, error) {
 	return b, nil
 }
 
-func verifyServerResponse(opts *DialOptions, copts *compressionOptions, challenge []byte, resp *http.Response) (*compressionOptions, error) {
+func verifyServerResponse(opts *DialOptions, copts *compressionOptions, challenge []byte, resp *http.Response) (string, *compressionOptions, error) {
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		return nil, fmt.Errorf("expected handshake response status code %v but got %v", http.StatusSwitchingProtocols, resp.StatusCode)
+		return "", nil, fmt.Errorf("expected handshake response status code %v but got %v", http.StatusSwitchingProtocols, resp.StatusCode)
 	}
 
 	if err := wsheaders.VerifyConnection(resp.Header); err != nil {
-		return nil, fmt.Errorf("WebSocket protocol violation: %v", err)
+		return "", nil, fmt.Errorf("WebSocket protocol violation: %v", err)
 	}
 
 	if err := wsheaders.VerifyServerUpgrade(resp.Header); err != nil {
-		return nil, fmt.Errorf("WebSocket protocol violation: %v", err)
+		return "", nil, fmt.Errorf("WebSocket protocol violation: %v", err)
 	}
 
 	if err := wsheaders.VerifyAccept(resp.Header, challenge); err != nil {
-		return nil, fmt.Errorf("WebSocket protocol violation: %v", err)
+		return "", nil, fmt.Errorf("WebSocket protocol violation: %v", err)
 	}
 
-	err := verifySubprotocol(opts.Subprotocols, resp)
+	subproto, err := wsheaders.VerifyProtocol(resp.Header, opts.Subprotocols)
 	if err != nil {
-		return nil, err
+		return "", nil, fmt.Errorf("WebSocket protcol violation: %v", err)
 	}
 
-	return verifyServerExtensions(copts, resp.Header)
-}
-
-func verifySubprotocol(subprotos []string, resp *http.Response) error {
-	proto := resp.Header.Get("Sec-WebSocket-Protocol")
-	if proto == "" {
-		return nil
+	copts, err = verifyServerExtensions(copts, resp.Header)
+	if err != nil {
+		return "", nil, err
 	}
-
-	for _, sp2 := range subprotos {
-		if strings.EqualFold(sp2, proto) {
-			return nil
-		}
-	}
-
-	return fmt.Errorf("WebSocket protocol violation: unexpected Sec-WebSocket-Protocol from server: %q", proto)
+	return subproto, copts, nil
 }
 
 func verifyServerExtensions(copts *compressionOptions, h http.Header) (*compressionOptions, error) {

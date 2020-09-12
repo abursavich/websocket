@@ -110,9 +110,9 @@ func accept(w http.ResponseWriter, r *http.Request, opts *AcceptOptions) (_ *Con
 	wsheaders.SetConnection(w.Header())
 	wsheaders.SetAccept(w.Header(), challenge)
 
-	subproto := selectSubprotocol(r, opts.Subprotocols)
-	if subproto != "" {
-		w.Header().Set("Sec-WebSocket-Protocol", subproto)
+	subproto, ok := wsheaders.SelectProtocol(r.Header, opts.Subprotocols)
+	if ok {
+		wsheaders.SetProtocols(w.Header(), subproto)
 	}
 
 	copts, ok := selectDeflate(websocketExtensions(r.Header), opts.CompressionMode)
@@ -140,7 +140,7 @@ func accept(w http.ResponseWriter, r *http.Request, opts *AcceptOptions) (_ *Con
 	brw.Reader.Reset(io.MultiReader(bytes.NewReader(b), netConn))
 
 	return newConn(connConfig{
-		subprotocol:    w.Header().Get("Sec-WebSocket-Protocol"),
+		subprotocol:    subproto,
 		rwc:            netConn,
 		client:         false,
 		copts:          copts,
@@ -215,18 +215,6 @@ func authenticateOrigin(r *http.Request, originHosts []string) error {
 
 func match(pattern, s string) (bool, error) {
 	return filepath.Match(strings.ToLower(pattern), strings.ToLower(s))
-}
-
-func selectSubprotocol(r *http.Request, subprotocols []string) string {
-	cps := headerTokens(r.Header, "Sec-WebSocket-Protocol")
-	for _, sp := range subprotocols {
-		for _, cp := range cps {
-			if strings.EqualFold(sp, cp) {
-				return cp
-			}
-		}
-	}
-	return ""
 }
 
 func selectDeflate(extensions []websocketExtension, mode CompressionMode) (*compressionOptions, bool) {

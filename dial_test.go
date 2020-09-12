@@ -129,6 +129,8 @@ func Test_verifyServerHandshake(t *testing.T) {
 	testCases := []struct {
 		name     string
 		response func(w http.ResponseWriter)
+		dopts    *DialOptions
+		subproto string
 		success  bool
 	}{
 		{
@@ -170,7 +172,7 @@ func Test_verifyServerHandshake(t *testing.T) {
 			response: func(w http.ResponseWriter) {
 				wsheaders.SetConnection(w.Header())
 				wsheaders.SetUpgrade(w.Header())
-				w.Header().Set("Sec-WebSocket-Protocol", "xd")
+				w.Header().Set(wsheaders.ProtocolKey, "xd")
 				w.WriteHeader(http.StatusSwitchingProtocols)
 			},
 			success: false,
@@ -204,6 +206,20 @@ func Test_verifyServerHandshake(t *testing.T) {
 			},
 			success: true,
 		},
+		{
+			name: "subproto",
+			dopts: &DialOptions{
+				Subprotocols: []string{"BAR", "FOO"},
+			},
+			response: func(w http.ResponseWriter) {
+				wsheaders.SetConnection(w.Header())
+				wsheaders.SetUpgrade(w.Header())
+				wsheaders.SetProtocols(w.Header(), "foo")
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			},
+			success:  true,
+			subproto: "FOO",
+		},
 	}
 
 	for _, tc := range testCases {
@@ -223,15 +239,17 @@ func Test_verifyServerHandshake(t *testing.T) {
 				wsheaders.SetAccept(resp.Header, challenge)
 			}
 
-			opts := &DialOptions{
-				Subprotocols: strings.Split(req.Header.Get("Sec-WebSocket-Protocol"), ","),
+			var opts DialOptions
+			if tc.dopts != nil {
+				opts = *tc.dopts
 			}
-			_, err = verifyServerResponse(opts, opts.CompressionMode.opts(), challenge, resp)
+			subproto, _, err := verifyServerResponse(&opts, opts.CompressionMode.opts(), challenge, resp)
 			if tc.success {
 				assert.Success(t, err)
 			} else {
 				assert.Error(t, err)
 			}
+			assert.Equal(t, "subprotocol", tc.subproto, subproto)
 		})
 	}
 }
